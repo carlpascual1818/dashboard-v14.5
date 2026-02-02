@@ -56,7 +56,6 @@
 
 <script src="config.js"></script>
 <script>
-
   function getToken(){ return localStorage.getItem('token') || ''; }
   function getUser(){
     try{ return JSON.parse(localStorage.getItem('user')||'{}'); }catch(e){ return {}; }
@@ -69,13 +68,44 @@
       headers:{'Content-Type':'application/json'},
       body: JSON.stringify(Object.assign({action, token:getToken()}, payload||{}))
     });
-    return await r.json();
+    const text = await r.text();
+    try { return JSON.parse(text); }
+    catch(e){
+      console.error('API returned non-JSON:', text);
+      return { success:false, error:'API returned non-JSON' };
+    }
+  }
+
+  function normalizeNav(raw){
+    const node = (raw && raw.nav) ? raw.nav : raw;
+    const categories = (node && node.categories) ? node.categories : [];
+    const flatPages = (node && node.pages) ? node.pages : [];
+
+    if (categories.length && flatPages.length) {
+      categories.forEach(cat => {
+        if (!Array.isArray(cat.pages) || !cat.pages.length) {
+          cat.pages = flatPages.filter(p => p.category_id === cat.category_id);
+        }
+      });
+    }
+
+    const cleanedCats = categories.map(cat => {
+      const pages = (cat.pages || []).filter(p => (p.status || 'Active') === 'Active');
+      return Object.assign({}, cat, { pages });
+    }).filter(cat => (cat.pages || []).length > 0);
+
+    cleanedCats.sort((a,b) => ((a.order ?? 999) - (b.order ?? 999)));
+    cleanedCats.forEach(cat => (cat.pages || []).sort((a,b) => ((a.order ?? 999) - (b.order ?? 999))));
+
+    return { categories: cleanedCats };
   }
 
   function renderNav(nav){
     const root=document.getElementById('nav');
     root.innerHTML='';
-    (nav.categories||[]).forEach(cat=>{
+
+    const cats = (nav && nav.categories) ? nav.categories : [];
+    cats.forEach(cat=>{
       const catDiv=document.createElement('div');
       catDiv.className='cat';
       catDiv.innerHTML = `<div>${esc(cat.icon||'')} ${esc(cat.display_name||cat.category_id)}</div><div class="muted">›</div>`;
@@ -88,10 +118,10 @@
         pDiv.textContent = p.display_name || p.page_id;
         pDiv.addEventListener('click', ()=>{
           if (p.page_id === 'hr_invite' || p.page_id === 'admin_invite_user') {
-        location.href = 'invite_user.html';
-      } else {
-        location.href = 'dashboard.html?page_id=' + encodeURIComponent(p.page_id);
-      }
+            location.href = 'invite_user.html';
+          } else {
+            location.href = 'dashboard.html?page_id=' + encodeURIComponent(p.page_id);
+          }
         });
         pages.appendChild(pDiv);
       });
@@ -108,22 +138,31 @@
   async function boot(){
     const u=getUser();
     document.getElementById('who').textContent = u.name ? (u.name + ' (' + (u.department||'') + ')') : (u.email || '');
-    document.getElementById('role').textContent = u.role || '';
+    document.getElementById('role').textContent = u.role || u.role_id || '';
 
     const token=getToken();
     if(!token){
       location.href = 'index.html';
       return;
     }
-    const nav = await api('nav', {});
-    if(!nav.success){
+
+    const res = await api('nav', {});
+    if(!res || !res.success){
       localStorage.removeItem('token');
       localStorage.removeItem('user');
       location.href = 'index.html';
       return;
     }
+
+    const nav = normalizeNav(res);
     renderNav(nav);
-    document.getElementById('hint').textContent = 'Loaded ' + (nav.categories||[]).length + ' sections';
+
+    const count = (nav.categories || []).length;
+    document.getElementById('hint').textContent = 'Loaded ' + count + ' sections';
+    if (!count) {
+      console.log('Nav response:', res);
+      document.getElementById('hint').textContent = 'Loaded 0 sections. Open console and check Nav response.';
+    }
   }
 
   document.getElementById('logoutBtn').addEventListener('click', async ()=>{
